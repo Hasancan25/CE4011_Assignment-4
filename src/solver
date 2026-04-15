@@ -11,8 +11,6 @@ class StructuralSolver:
         self.num_dof = self.num_nodes * 3
         self.K_global = lil_matrix((self.num_dof, self.num_dof))
         self.F_global = np.zeros(self.num_dof)
-        
-        # Düğüm ID'lerini matris sırasına eşleyen harita
         self.node_map = {node.id: i for i, node in enumerate(nodes)}
 
     def validate_structure(self, boundary_conditions):
@@ -20,28 +18,17 @@ class StructuralSolver:
         for elem in self.elements:
             if elem.material.E <= 0 or elem.material.A <= 0:
                 raise ValueError(f"HATA: Eleman {elem.id} malzeme özellikleri geçersiz!")
-
-        connected_nodes = set()
-        for elem in self.elements:
-            connected_nodes.add(elem.node_i.id)
-            connected_nodes.add(elem.node_j.id)
-        
-        for node in self.nodes:
-            if node.id not in connected_nodes:
-                print(f"UYARI: Düğüm {node.id} herhangi bir elemana bağlı değil!")
-
         if len(boundary_conditions) < 3:
             raise RuntimeError("HATA: Yapı stabil değil! En az 3 sınır şartı gerekli.")
 
     def apply_nodal_loads(self, nodal_loads):
-        """Nodal yükleri '+=' kullanarak toplar."""
+        """Dış düğüm yüklerini global vektöre ekler."""
         if nodal_loads:
             for load in nodal_loads:
                 node_id = load['node_id']
                 if node_id in self.node_map:
                     node_idx = self.node_map[node_id]
                     dof = load['dof']
-                    # BURASI KRİTİK: Yükleri üst üste ekliyoruz
                     self.F_global[node_idx * 3 + dof] += load['value']
 
     def get_local_k(self, element):
@@ -58,13 +45,12 @@ class StructuralSolver:
             [ c1,  0,   0,  -c1,  0,   0  ],
             [ 0,   c2,  c3,  0,  -c2,  c3 ],
             [ 0,   c3,  c4,  0,  -c3,  c5 ],
-            [-c1,  0,   0,   c1,  0,   0  ],
+            [ -c1, 0,   0,   c1,  0,   0  ],
             [ 0,  -c2, -c3,  0,   c2, -c3 ],
             [ 0,   c3,  c5,  0,  -c3,  c4 ]
         ])
         
-        # Moment Release Modifikasyonları
-        if rel_i and not rel_j: # Pinned-Fixed
+        if rel_i and not rel_j:
             k = np.array([
                 [c1, 0, 0, -c1, 0, 0],
                 [0, 3*E*I/L**3, 0, 0, -3*E*I/L**3, 3*E*I/L**2],
@@ -73,7 +59,7 @@ class StructuralSolver:
                 [0, -3*E*I/L**3, 0, 0, 3*E*I/L**3, -3*E*I/L**2],
                 [0, 3*E*I/L**2, 0, 0, -3*E*I/L**2, 3*E*I/L]
             ])
-        elif rel_j and not rel_i: # Fixed-Pinned
+        elif rel_j and not rel_i:
             k = np.array([
                 [c1, 0, 0, -c1, 0, 0],
                 [0, 3*E*I/L**3, 3*E*I/L**2, 0, -3*E*I/L**3, 0],
@@ -82,7 +68,7 @@ class StructuralSolver:
                 [0, -3*E*I/L**3, -3*E*I/L**2, 0, 3*E*I/L**3, 0],
                 [0, 0, 0, 0, 0, 0]
             ])
-        elif rel_i and rel_j: # Pinned-Pinned
+        elif rel_i and rel_j:
             k = np.zeros((6,6)); k[0,0] = k[3,3] = c1; k[0,3] = k[3,0] = -c1
             
         return k
@@ -94,6 +80,27 @@ class StructuralSolver:
         T = np.zeros((6, 6))
         T[0:3, 0:3] = T_sub; T[3:6, 3:6] = T_sub
         return T
+
+    def _get_element_thermal_fea(self, element):
+        """[ASSIGNMENT #4] Termal yüklerden kaynaklanan Fixed-End Actions hesaplar."""
+        E = element.material.E
+        A = element.material.A
+        I = element.material.I
+        alpha = element.material.alpha
+        h = element.h
+        dT_u = element.dT_uniform
+        dT_g = element.dT_gradient
+
+        # Eksenel termal kuvvet (P = E * A * alpha * dT)
+        P_th = E * A * alpha * dT_u
+        
+        # Termal moment (M = E * I * alpha * dT_g / h)
+        M_th = 0
+        if element.type == "frame" and h > 0:
+            M_th = (E * I * alpha * dT_g) / h
+
+        # Fixed-end forces (Lokal): Isınan eleman dışarı doğru itme yapar
+        return np.array([-P_th, 0, M_th, P_th, 0, -M_th])
 
     def _get_element_fea(self, element):
         L = element.get_length()
@@ -107,23 +114,31 @@ class StructuralSolver:
                 P = magnitude
                 fea[1] += P / 2; fea[2] += P * L / 8
                 fea[4] += P / 2; fea[5] -= P * L / 8
+        
+        # Termal etkileri de standart FEA'ya ekliyoruz
+        fea += self._get_element_thermal_fea(element)
         return fea
 
     def assemble(self):
+        """K_global ve F_global'i inşa eder."""
         for elem in self.elements:
             k_loc = self.get_local_k(elem)
             T = self.get_transformation_matrix(elem)
             k_glob = T.T @ k_loc @ T
+            
             n1_idx = self.node_map[elem.node_i.id] * 3
             n2_idx = self.node_map[elem.node_j.id] * 3
             dofs = list(range(n1_idx, n1_idx+3)) + list(range(n2_idx, n2_idx+3))
+            
+            # Rijitlik matrisi montajı
             for r in range(6):
                 for c in range(6): self.K_global[dofs[r], dofs[c]] += k_glob[r, c]
-            if elem.member_loads:
-                fea_loc = self._get_element_fea(elem)
-                fea_glob = T.T @ fea_loc
-                self.F_global[n1_idx:n1_idx+3] -= fea_glob[0:3]
-                self.F_global[n2_idx:n2_idx+3] -= fea_glob[3:6]
+            
+            # Üye yükleri VE Termal yüklerin montajı
+            fea_loc = self._get_element_fea(elem)
+            fea_glob = T.T @ fea_loc
+            self.F_global[n1_idx:n1_idx+3] -= fea_glob[0:3]
+            self.F_global[n2_idx:n2_idx+3] -= fea_glob[3:6]
 
     def solve(self, boundary_conditions, nodal_loads=None):
         self.validate_structure(boundary_conditions)
@@ -134,7 +149,8 @@ class StructuralSolver:
             if nid in self.node_map:
                 idx = self.node_map[nid] * 3 + dof
                 self.K_global[idx, idx] += self.penalty
-                self.F_global[idx] += val * self.penalty
+                # val 0 ise sabit mesnet, 0.002 ise 2mm çökme olur!
+                self.F_global[idx] += val * self.penalty 
         
         try:
             K_csr = self.K_global.tocsr()
@@ -156,6 +172,7 @@ class StructuralSolver:
             T = self.get_transformation_matrix(elem)
             u_loc = T @ u_glob
             k_loc = self.get_local_k(elem)
+            # Kritik: Termal etkiler üye kuvvetleri hesabına dahil edilmeli
             fea_loc = self._get_element_fea(elem)
             f_local = k_loc @ u_loc + fea_loc
             results[elem.id] = f_local
