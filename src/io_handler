@@ -1,0 +1,109 @@
+import json
+import os
+import math
+
+class Node:
+    def __init__(self, id, x, y, nodal_loads=None):
+        # Ne gelirse gelsin zorla sayıya çeviriyoruz (Tipi uyuşsun diye)
+        self.id = int(id)
+        self.x = float(x)
+        self.y = float(y)
+        self.displacements = [0.0, 0.0, 0.0]
+        
+        # Yük dizisini kuruyoruz
+        self.load_array = [0.0, 0.0, 0.0]
+        if nodal_loads:
+            for L in nodal_loads:
+                dof = int(L.get('dof', 0))
+                val = float(L.get('value', 0.0))
+                if 0 <= dof <= 2:
+                    self.load_array[dof] += val
+
+        # Çözücü HANGİ kelimeyi arıyorsa arasın, cevabı bulacak:
+        self.loads = self.load_array
+        self.load = self.load_array
+        self.forces = self.load_array
+        self.force = self.load_array
+        self.P = self.load_array
+        self.F = self.load_array
+        self.nodal_loads = self.load_array
+        
+        # Eğer eksen bazlı arıyorsa:
+        self.Fx = self.load_array[0]
+        self.Fy = self.load_array[1]
+        self.M = self.load_array[2]
+        self.Mz = self.load_array[2]
+        self.Px = self.load_array[0]
+        self.Py = self.load_array[1]
+
+class Material:
+    def __init__(self, E, A, I, name="Steel"):
+        self.E = float(E)
+        self.A = float(A)
+        self.I = float(I)
+        self.name = name
+
+class Element:
+    def __init__(self, id, node_i, node_j, material, type="beam", releases=None, member_loads=None):
+        self.id = int(id)
+        self.node_i = node_i
+        self.node_j = node_j
+        self.material = material
+        self.type = type
+        self.releases = releases if releases else [0, 0]
+        self.member_loads = member_loads if member_loads else [] 
+
+    def get_length(self):
+        dx = self.node_j.x - self.node_i.x
+        dy = self.node_j.y - self.node_i.y
+        return math.sqrt(dx**2 + dy**2)
+
+    def get_angle(self):
+        dx = self.node_j.x - self.node_i.x
+        dy = self.node_j.y - self.node_i.y
+        return math.atan2(dy, dx)
+
+class IOHandler:
+    @staticmethod
+    def load_input(file_path):
+        root_dir = r"C:\Users\hasan\Desktop\CE4011_Assignment#3"
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(root_dir, file_path)
+
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        mats = {int(m['id']): Material(m['E'], m['A'], m['I'], m['name']) for m in data['materials']}
+        
+        # Yükleri topla ve ID'leri KESİNLİKLE integer'a çevir
+        loads_dict = {}
+        for load in data.get('nodal_loads', []):
+            nid = int(load.get('node_id', load.get('node_i', 0)))
+            if nid not in loads_dict:
+                loads_dict[nid] = []
+            loads_dict[nid].append(load)
+
+        nodes_dict = {}
+        for n in data['nodes']:
+            n_id = int(n['id'])
+            n_loads = loads_dict.get(n_id, [])
+            nodes_dict[n_id] = Node(n_id, n['x'], n['y'], n_loads)
+            
+        nodes_list = list(nodes_dict.values())
+
+        elements = []
+        for e in data['elements']:
+            s = int(e.get('node_id', e.get('node_start', 0)))
+            f_id = int(e.get('node_j', e.get('node_end', 0)))
+            rels = e.get('releases', [0, 0])
+            m_loads = e.get('member_loads', [])
+            
+            elem = Element(int(e['id']), nodes_dict[s], nodes_dict[f_id], mats[int(e['material_id'])], e.get('type', 'beam'), rels, m_loads)
+            elements.append(elem)
+
+        bc = []
+        for b in data['boundary_conditions']:
+            n_id = int(b.get('node_id', b.get('node_i', 0)))
+            bc.append((n_id, int(b['dof']), float(b['value'])))
+
+        return nodes_list, elements, bc
