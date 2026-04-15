@@ -1,0 +1,79 @@
+from src.solver import StructuralSolver
+import numpy as np
+
+# Eğer senin proje yapında Node, Element ve Material sınıfları ayrıysa onları da import etmelisin
+# Örnek: from src.models import Node, Element, Material
+
+def main():
+    print("=== CE-4011 Direct Structural Analysis (No-JSON Mode) ===")
+    
+    # 1. PARAMETRELER
+    stories = 15
+    bays = 6
+    h_story = 3.5
+    w_bay = 6.0
+    
+    # Malzeme Tanımı (Steel)
+    # Not: Material sınıfının parametre sırasına göre düzenlemelisin
+    # material = Material(id=1, name="Steel", E=200e9, A=0.08, I=0.0012)
+    # Şimdilik senin solver'ın beklediği nesne yapısını kurduğunu varsayıyorum.
+    
+    nodes = []
+    elements = []
+    
+    # 2. DÜĞÜMLERİ OLUŞTUR
+    for i in range(stories + 1):
+        for j in range(bays + 1):
+            # Node nesnelerini oluşturuyoruz (ID, x, y)
+            new_node = Node(id=i*(bays+1)+j, x=j*w_bay, y=i*h_story)
+            nodes.append(new_node)
+
+    # 3. ELEMANLARI OLUŞTUR (Kolonlar ve Kirişler)
+    # Kolonlar
+    for i in range(stories):
+        for j in range(bays + 1):
+            n_i = nodes[i*(bays+1) + j]
+            n_j = nodes[(i+1)*(bays+1) + j]
+            elements.append(Element(id=len(elements)+1, node_i=n_i, node_j=n_j, material=material, type="frame"))
+
+    # Kirişler
+    for i in range(1, stories + 1):
+        for j in range(bays):
+            n_i = nodes[i*(bays+1) + j]
+            n_j = nodes[i*(bays+1) + (j + 1)]
+            elements.append(Element(id=len(elements)+1, node_i=n_i, node_j=n_j, material=material, type="frame"))
+
+    # 4. YÜKLER VE SINIR ŞARTLARI
+    bc = []
+    # Zemin katı sabitle (Node 0'dan bays'e kadar)
+    for j in range(bays + 1):
+        bc.append((nodes[j].id, 0, 0.0)) # X fix
+        bc.append((nodes[j].id, 1, 0.0)) # Y fix
+        bc.append((nodes[j].id, 2, 0.0)) # M fix
+
+    nodal_loads = []
+    # Rüzgar yüklerini ekle (Sol kolon boyunca)
+    for i in range(1, stories + 1):
+        nodal_loads.append({
+            "node_id": nodes[i*(bays+1)].id,
+            "dof": 0,
+            "value": i * 20000.0
+        })
+
+    # 5. ANALİZ VE ÇÖZÜM
+    solver = StructuralSolver(nodes, elements)
+    solver.assemble()
+    solver.solve(bc, nodal_loads)
+
+    # 6. KRİTİK SONUÇLARI YAZDIR
+    print("-" * 40)
+    top_node = nodes[-1] # En üst sağ düğüm
+    print(f"MAKSİMUM DEPLASMAN (Top Sway): {top_node.displacements[0]*100:.2f} cm")
+    
+    reactions = solver.calculate_reactions(bc)
+    total_rx = sum(r[0] for r in reactions.values())
+    print(f"TOPLAM REAKSİYON (Rx): {total_rx:.2f} N")
+    print("-" * 40)
+
+if __name__ == "__main__":
+    main()
