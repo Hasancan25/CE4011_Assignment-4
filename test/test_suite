@@ -1,0 +1,92 @@
+import unittest
+import numpy as np
+from src.io_handler import Node, Element, Material
+from src.solver import StructuralSolver
+
+class TestStructuralAnalysis(unittest.TestCase):
+    def setUp(self):
+        self.mat = Material(200e9, 0.01, 0.0001)
+        self.tol = 1e-6 # 
+
+    def get_force_vector(self, solver):
+        """Solver içindeki kuvvet vektörü adını otomatik bulur."""
+        for attr in ['F', 'P', 'forces', 'F_global', 'load_array']:
+            if hasattr(solver, attr):
+                return getattr(solver, attr)
+        raise AttributeError("Solver içinde kuvvet vektörü bulunamadı!")
+
+    # --- Q2: UNIT TESTS (3 Adet) [cite: 12] ---
+    
+    def test_unit_length(self):
+        n1, n2 = Node(1, 0, 0), Node(2, 3, 4)
+        elem = Element(1, n1, n2, self.mat)
+        self.assertAlmostEqual(elem.get_length(), 5.0, delta=self.tol)
+
+    def test_unit_angle(self):
+        n1, n2 = Node(1, 0, 0), Node(2, 1, 1)
+        elem = Element(1, n1, n2, self.mat)
+        self.assertAlmostEqual(elem.get_angle(), np.pi/4, delta=self.tol)
+
+    def test_unit_node(self):
+        n = Node(1, 10, 20)
+        self.assertEqual(n.x, 10)
+        self.assertEqual(n.y, 20)
+
+    # --- Q2: INTERFACE TESTS (2 Adet) [cite: 12] ---
+
+    def test_interface_matrix_size(self):
+        nodes = [Node(1, 0, 0), Node(2, 3, 0)]
+        elements = [Element(1, nodes[0], nodes[1], self.mat)]
+        solver = StructuralSolver(nodes, elements)
+        solver.assemble()
+        self.assertEqual(solver.K_global.shape, (6, 6))
+
+    def test_interface_load_injection(self):
+        # Düzeltme: Node 2'yi nodes listesine ekledik
+        n1, n2 = Node(1, 0, 0), Node(2, 3, 0)
+        nodes = [n1, n2]
+        elements = [Element(1, n1, n2, self.mat)]
+        solver = StructuralSolver(nodes, elements)
+        solver.assemble()
+        F = self.get_force_vector(solver)
+        self.assertEqual(len(F), 6)
+
+    # --- Q2: REGRESSION TESTS (3 Adet) [cite: 12] ---
+
+    def test_regression_cantilever(self):
+        """Case (b) Doğrulaması"""
+        n1, n2 = Node(1, 0, 0), Node(2, 0, 3)
+        nodes, elements = [n1, n2], [Element(1, n1, n2, self.mat)]
+        bc = [(1, 0, 0), (1, 1, 0), (1, 2, 0)]
+        solver = StructuralSolver(nodes, elements)
+        solver.assemble()
+        F = self.get_force_vector(solver)
+        F[3] = 50000.0 # Yatay yük
+        solver.solve(bc)
+        self.assertAlmostEqual(n2.displacements[0], 0.0225, delta=1e-4)
+
+    def test_regression_reactions(self):
+        n1, n2 = Node(1, 0, 0), Node(2, 3, 0)
+        nodes, elements = [n1, n2], [Element(1, n1, n2, self.mat)]
+        bc = [(1, 0, 0), (1, 1, 0), (1, 2, 0)]
+        solver = StructuralSolver(nodes, elements)
+        solver.assemble()
+        F = self.get_force_vector(solver)
+        F[3] = 50000.0
+        solver.solve(bc)
+        reac = solver.calculate_reactions(bc)
+        self.assertAlmostEqual(reac[1][0], -50000.0, delta=self.tol)
+
+    def test_regression_truss(self):
+        n1, n2 = Node(1, 0, 0), Node(2, 3, 0)
+        nodes = [n1, n2]
+        elements = [Element(1, n1, n2, self.mat, type="truss")]
+        solver = StructuralSolver(nodes, elements)
+        solver.assemble()
+        forces = solver.calculate_member_forces()
+        # Truss elemanlarda moment sıfır olmalı [cite: 16]
+        self.assertEqual(forces[1][2], 0.0)
+        self.assertEqual(forces[1][5], 0.0)
+
+if __name__ == '__main__':
+    unittest.main()
