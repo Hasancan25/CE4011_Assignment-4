@@ -1,0 +1,172 @@
+import numpy as np
+from scipy.sparse import lil_matrix
+from scipy.sparse.linalg import cg
+
+class StructuralSolver:
+    def __init__(self, nodes, elements, penalty=1e20):
+        self.nodes = nodes
+        self.elements = elements
+        self.penalty = penalty
+        self.num_nodes = len(nodes)
+        self.num_dof = self.num_nodes * 3
+        self.K_global = lil_matrix((self.num_dof, self.num_dof))
+        self.F_global = np.zeros(self.num_dof)
+        
+        # Düğüm ID'lerini matris sırasına eşleyen harita
+        self.node_map = {node.id: i for i, node in enumerate(nodes)}
+
+    def validate_structure(self, boundary_conditions):
+        """Analiz öncesi yapının stabilitesini kontrol eder."""
+        for elem in self.elements:
+            if elem.material.E <= 0 or elem.material.A <= 0:
+                raise ValueError(f"HATA: Eleman {elem.id} malzeme özellikleri geçersiz!")
+
+        connected_nodes = set()
+        for elem in self.elements:
+            connected_nodes.add(elem.node_i.id)
+            connected_nodes.add(elem.node_j.id)
+        
+        for node in self.nodes:
+            if node.id not in connected_nodes:
+                print(f"UYARI: Düğüm {node.id} herhangi bir elemana bağlı değil!")
+
+        if len(boundary_conditions) < 3:
+            raise RuntimeError("HATA: Yapı stabil değil! En az 3 sınır şartı gerekli.")
+
+    def apply_nodal_loads(self, nodal_loads):
+        """Nodal yükleri '+=' kullanarak toplar."""
+        if nodal_loads:
+            for load in nodal_loads:
+                node_id = load['node_id']
+                if node_id in self.node_map:
+                    node_idx = self.node_map[node_id]
+                    dof = load['dof']
+                    # BURASI KRİTİK: Yükleri üst üste ekliyoruz
+                    self.F_global[node_idx * 3 + dof] += load['value']
+
+    def get_local_k(self, element):
+        L = element.get_length()
+        E = element.material.E
+        A = element.material.A
+        I = element.material.I
+        rel_i, rel_j = element.releases
+        
+        c1, c2, c3 = E*A/L, 12*E*I/L**3, 6*E*I/L**2
+        c4, c5 = 4*E*I/L, 2*E*I/L
+        
+        k = np.array([
+            [ c1,  0,   0,  -c1,  0,   0  ],
+            [ 0,   c2,  c3,  0,  -c2,  c3 ],
+            [ 0,   c3,  c4,  0,  -c3,  c5 ],
+            [-c1,  0,   0,   c1,  0,   0  ],
+            [ 0,  -c2, -c3,  0,   c2, -c3 ],
+            [ 0,   c3,  c5,  0,  -c3,  c4 ]
+        ])
+        
+        # Moment Release Modifikasyonları
+        if rel_i and not rel_j: # Pinned-Fixed
+            k = np.array([
+                [c1, 0, 0, -c1, 0, 0],
+                [0, 3*E*I/L**3, 0, 0, -3*E*I/L**3, 3*E*I/L**2],
+                [0, 0, 0, 0, 0, 0],
+                [-c1, 0, 0, c1, 0, 0],
+                [0, -3*E*I/L**3, 0, 0, 3*E*I/L**3, -3*E*I/L**2],
+                [0, 3*E*I/L**2, 0, 0, -3*E*I/L**2, 3*E*I/L]
+            ])
+        elif rel_j and not rel_i: # Fixed-Pinned
+            k = np.array([
+                [c1, 0, 0, -c1, 0, 0],
+                [0, 3*E*I/L**3, 3*E*I/L**2, 0, -3*E*I/L**3, 0],
+                [0, 3*E*I/L**2, 3*E*I/L, 0, -3*E*I/L**2, 0],
+                [-c1, 0, 0, c1, 0, 0],
+                [0, -3*E*I/L**3, -3*E*I/L**2, 0, 3*E*I/L**3, 0],
+                [0, 0, 0, 0, 0, 0]
+            ])
+        elif rel_i and rel_j: # Pinned-Pinned
+            k = np.zeros((6,6)); k[0,0] = k[3,3] = c1; k[0,3] = k[3,0] = -c1
+            
+        return k
+
+    def get_transformation_matrix(self, element):
+        theta = element.get_angle()
+        c, s = np.cos(theta), np.sin(theta)
+        T_sub = np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]])
+        T = np.zeros((6, 6))
+        T[0:3, 0:3] = T_sub; T[3:6, 3:6] = T_sub
+        return T
+
+    def _get_element_fea(self, element):
+        L = element.get_length()
+        fea = np.zeros(6)
+        for l_type, magnitude, pos in element.member_loads:
+            if l_type == "UDL":
+                w = magnitude
+                fea[1] += w * L / 2; fea[2] += w * L**2 / 12
+                fea[4] += w * L / 2; fea[5] -= w * L**2 / 12
+            elif l_type == "POINT":
+                P = magnitude
+                fea[1] += P / 2; fea[2] += P * L / 8
+                fea[4] += P / 2; fea[5] -= P * L / 8
+        return fea
+
+    def assemble(self):
+        for elem in self.elements:
+            k_loc = self.get_local_k(elem)
+            T = self.get_transformation_matrix(elem)
+            k_glob = T.T @ k_loc @ T
+            n1_idx = self.node_map[elem.node_i.id] * 3
+            n2_idx = self.node_map[elem.node_j.id] * 3
+            dofs = list(range(n1_idx, n1_idx+3)) + list(range(n2_idx, n2_idx+3))
+            for r in range(6):
+                for c in range(6): self.K_global[dofs[r], dofs[c]] += k_glob[r, c]
+            if elem.member_loads:
+                fea_loc = self._get_element_fea(elem)
+                fea_glob = T.T @ fea_loc
+                self.F_global[n1_idx:n1_idx+3] -= fea_glob[0:3]
+                self.F_global[n2_idx:n2_idx+3] -= fea_glob[3:6]
+
+    def solve(self, boundary_conditions, nodal_loads=None):
+        self.validate_structure(boundary_conditions)
+        if nodal_loads:
+            self.apply_nodal_loads(nodal_loads)
+            
+        for nid, dof, val in boundary_conditions:
+            if nid in self.node_map:
+                idx = self.node_map[nid] * 3 + dof
+                self.K_global[idx, idx] += self.penalty
+                self.F_global[idx] += val * self.penalty
+        
+        try:
+            K_csr = self.K_global.tocsr()
+            u, info = cg(K_csr, self.F_global, rtol=1e-12)
+            if info > 0: raise RuntimeError("Analiz yakınsamadı!")
+            for node in self.nodes:
+                idx = self.node_map[node.id] * 3
+                node.displacements = u[idx:idx+3]
+            return u
+        except Exception as e:
+            raise RuntimeError(f"Matris çözümü başarısız: {e}")
+
+    def calculate_member_forces(self):
+        results = {}
+        for elem in self.elements:
+            u_i = self.nodes[self.node_map[elem.node_i.id]].displacements
+            u_j = self.nodes[self.node_map[elem.node_j.id]].displacements
+            u_glob = np.concatenate([u_i, u_j])
+            T = self.get_transformation_matrix(elem)
+            u_loc = T @ u_glob
+            k_loc = self.get_local_k(elem)
+            fea_loc = self._get_element_fea(elem)
+            f_local = k_loc @ u_loc + fea_loc
+            results[elem.id] = f_local
+        return results
+
+    def calculate_reactions(self, boundary_conditions):
+        reactions = {}
+        for nid, dof, val in boundary_conditions:
+            idx = self.node_map[nid] * 3 + dof
+            u_actual = self.nodes[self.node_map[nid]].displacements[dof]
+            r_force = -self.penalty * (u_actual - val)
+            if nid not in reactions: reactions[nid] = np.zeros(3)
+            reactions[nid][dof] = r_force
+        return reactions
