@@ -1,0 +1,36 @@
+import numpy as np
+
+class Material:
+    def __init__(self, E, A, I, name="General Material"):
+        self.E = E  # Elastisite Modülü
+        self.A = A  # Kesit Alanı
+        self.I = I  # Atalet Momenti
+        self.name = name
+
+class Node:
+    def __init__(self, node_id, x, y):
+        self.id = node_id
+        self.x = x
+        self.y = y
+        self.displacements = np.zeros(3) # [u, v, theta]
+        self.reactions = np.zeros(3)     # [Rx, Ry, M]
+
+class Element:
+    def __init__(self, elem_id, node_i, node_j, material, elem_type="frame"):
+        self.id = elem_id
+        self.node_i = node_i
+        self.node_j = node_j
+        self.material = material
+        self.type = elem_type # "frame" veya "truss"
+        
+        # Moment Release: [start_node, end_node] - True ise moment iletmez (mafsal)
+        self.releases = [False, False] 
+        
+        # Eleman üzerindeki yükler (Member Loads)
+        self.member_loads = [] # List of tuples: (type, magnitude, position)
+
+    def get_length(self):
+        return np.sqrt((self.node_j.x - self.node_i.x)**2 + (self.node_j.y - self.node_i.y)**2)
+
+    def get_angle(self):
+        return np.arctan2(self.node_j.y - self.node_i.y, self.node_j.x - self.node_i.x)
