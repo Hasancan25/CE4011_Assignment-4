@@ -1,11 +1,21 @@
 import numpy as np
 
 class Material:
-    def __init__(self, E, A, I, name="General Material"):
-        self.E = E  # Elastisite Modülü
-        self.A = A  # Kesit Alanı
-        self.I = I  # Atalet Momenti
+    def __init__(self, material_id, name, E, A, I, alpha=0.0):
+        """
+        material_id: Malzeme kimlik numarası
+        name: Malzeme adı (Beton, Çelik vb.)
+        E: Elastisite Modülü (Pa)
+        A: Kesit Alanı (m^2)
+        I: Atalet Momenti (m^4)
+        alpha: Termal Genleşme Katsayısı (1/°C) [Assignment #4 Gereksinimi]
+        """
+        self.id = material_id
         self.name = name
+        self.E = E
+        self.A = A
+        self.I = I
+        self.alpha = alpha # 
 
 class Node:
     def __init__(self, node_id, x, y):
@@ -23,11 +33,22 @@ class Element:
         self.material = material
         self.type = elem_type # "frame" veya "truss"
         
-        # Moment Release: [start_node, end_node] - True ise moment iletmez (mafsal)
+        # Moment Release: [start_node, end_node]
         self.releases = [False, False] 
         
-        # Eleman üzerindeki yükler (Member Loads)
-        self.member_loads = [] # List of tuples: (type, magnitude, position)
+        # Eleman üzerindeki yükler
+        self.member_loads = [] 
+        
+        # [Assignment #4] Termal Yük Parametreleri
+        self.dT_uniform = 0.0   # Üniform sıcaklık değişimi 
+        self.dT_gradient = 0.0  # Sıcaklık gradyanı (Alt-Üst farkı) 
+        self.h = 0.0            # Kesit yüksekliği (Gradyan hesabı için) [cite: 28]
+
+    def set_thermal_loads(self, dT_u=0.0, dT_g=0.0, h=0.0):
+        """Elemana termal yük tanımlar."""
+        self.dT_uniform = dT_u
+        self.dT_gradient = dT_g
+        self.h = h
 
     def get_length(self):
         return np.sqrt((self.node_j.x - self.node_i.x)**2 + (self.node_j.y - self.node_i.y)**2)
