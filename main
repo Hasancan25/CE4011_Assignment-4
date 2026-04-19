@@ -2,73 +2,141 @@ import numpy as np
 from src.models import Node, Element, Material
 from src.solver import StructuralSolver
 
-def main():
-    print("🚀 CE 4011 - Structural Analysis Tool v2.0 Başlatılıyor...")
-    print("-" * 50)
+def run_scenario_a():
+    print("\n" + "="*80)
+    print("CE 4011 - SCENARIO A: SUPPORT SETTLEMENT ANALYSIS")
+    print("="*80)
 
-    # --- 1. MALZEME TANIMLARI ---
-    # Beton (ABCD & BE): E=30 GPa, A=0.25 m2, I=0.005208 m4, alpha=8e-6
-    mat_concrete = Material(1, "Concrete", E=30e9, A=0.25, I=0.005208, alpha=8e-6)
-    
-    # Çelik Truss (FC): E=200 GPa, A=9.11e-5 m2, I=0 (Truss), alpha=1.2e-5
-    mat_steel_truss = Material(2, "Steel_Truss", E=200e9, A=9.11e-5, I=0, alpha=1.2e-5)
+    # 1. Materials (PDF Page 1)
+    # Concrete: E=30 GPa, Section: 50x50 cm -> A=0.25, I=0.00520833
+    mat_concrete = Material(1, "Concrete", E=30e9, A=0.25, I=0.00520833)
+    # Steel Truss: E=200 GPa, OD=3cm, t=1mm -> A=9.11e-5
+    mat_steel = Material(2, "Steel_Truss", E=200e9, A=9.11e-5, I=0)
 
-    # --- 2. DÜĞÜM (NODE) TANIMLARI ---
-    # Koordinatlar (x, y) metre cinsinden
+    # 2. Nodes (Coordinates based on PDF: 4m, 5m, 3m, 3m)
     nodes = [
-        Node(0, 0, 4),   # A
-        Node(1, 4, 4),   # B
-        Node(2, 9, 4),   # C
-        Node(3, 12, 4),  # D
-        Node(4, 4, 0),   # E (Mesnet)
-        Node(5, 9, 0)    # F (Truss ayağı)
+        Node(0, 0, 4),   # A: Pin Support
+        Node(1, 4, 4),   # B: Joint
+        Node(2, 12, 4),  # C: Joint (at x = 4+5+3 = 12m)
+        Node(3, 15, 4),  # D: Cantilever End (at x = 12+3 = 15m)
+        Node(4, 4, 0),   # E: Pin Support (Settlement at x=4, y=0)
+        Node(5, 9, 0)    # F: Roller Support (Truss base at x=4+5 = 9m)
     ]
 
-    # --- 3. ELEMAN (ELEMENT) TANIMLARI ---
+    # 3. Elements
     elements = [
         Element(1, nodes[0], nodes[1], mat_concrete), # AB
         Element(2, nodes[1], nodes[2], mat_concrete), # BC
-        Element(3, nodes[2], nodes[3], mat_concrete), # CD (Cantilever)
-        Element(4, nodes[1], nodes[4], mat_concrete), # BE (Column)
-        Element(5, nodes[5], nodes[2], mat_steel_truss, elem_type="truss") # FC
+        Element(3, nodes[2], nodes[3], mat_concrete), # CD
+        Element(4, nodes[1], nodes[4], mat_concrete), # BE
+        Element(5, nodes[5], nodes[2], mat_steel, elem_type="truss") # FC
     ]
 
-    # --- 4. SINIR ŞARTLARI VE MESNET ÇÖKMESİ ---
-    # boundary_conditions: (node_id, dof, value)
-    # DOF: 0=ux, 1=uy (düşey), 2=rotation
+    # 4. Boundary Conditions (Support Settlement at Node 4: 2mm = 0.002m)
+    # BC: (NodeID, DOF, Value) | DOF: 0=Ux, 1=Uy, 2=Rotation
     bc = [
-        (0, 0, 0.0), (0, 1, 0.0), (0, 2, 0.0),      # A: Fixed Support
-        (4, 0, 0.0), (4, 1, -0.002), (4, 2, 0.0),    # E: Fixed Support + 2mm Çökme!
-        (5, 0, 0.0), (5, 1, 0.0)                     # F: Pin Support (Truss)
+        (0, 0, 0.0), (0, 1, 0.0),             # A: Pin
+        (4, 0, 0.0), (4, 1, -0.002),          # E: Pin + Settlement
+        (5, 1, 0.0)                           # F: Roller (Vertical restraint)
     ]
 
-    # --- 5. ANALİZ ÇALIŞTIRMA ---
+    # 5. Solve
     solver = StructuralSolver(nodes, elements)
     solver.assemble()
     solver.solve(bc)
 
-    # --- 6. SONUÇLARIN YAZDIRILMASI ---
-    print("\n✅ Analiz Tamamlandı! Sonuçlar (Scenario A):")
-    print("-" * 50)
-    
-    # Düğüm Deplasmanları
-    print(f"{'Node':<10} | {'u (mm)':<12} | {'v (mm)':<12} | {'theta (rad)':<12}")
-    for node in nodes:
-        u, v, th = node.displacements
-        print(f"{node.id:<10} | {u*1000:10.4f} | {v*1000:10.4f} | {th:10.6f}")
+    # --- REPORTING ---
+    print("\n[TABLE 1: NODAL DISPLACEMENTS]")
+    print(f"{'NodeID':<8} | {'U (mm)':<10} | {'V (mm)':<10} | {'Rotation (rad)':<15}")
+    print("-" * 55)
+    for n in nodes:
+        u, v, th = n.displacements
+        print(f"{n.id:<8} | {u*1000:10.4f} | {v*1000:10.4f} | {th:15.6e}")
 
-    # Mesnet Reaksiyonları
-    print("\n🔍 Mesnet Reaksiyonları (kN - kNm):")
+    print("\n[TABLE 2: SUPPORT REACTIONS]")
     reactions = solver.calculate_reactions(bc)
+    print(f"{'NodeID':<8} | {'Rx (kN)':<10} | {'Ry (kN)':<10} | {'M (kNm)':<10}")
+    print("-" * 45)
     for nid, r in reactions.items():
-        print(f"Node {nid}: Rx={r[0]/1000:7.2f} kN, Ry={r[1]/1000:7.2f} kN, M={r[2]/1000:7.2f} kNm")
+        print(f"{nid:<8} | {r[0]/1000:10.2f} | {r[1]/1000:10.2f} | {r[2]/1000:10.2f}")
 
-    # Üye Kuvvetleri (BC Kirişi için örnek)
-    member_forces = solver.calculate_member_forces()
-    f_bc = member_forces[2] # Element ID 2: BC
-    print("\n🏗️ BC Kirişi İç Kuvvetleri (Lokal):")
-    print(f"Start Node Moment: {f_bc[2]/1000:.2f} kNm")
-    print(f"End Node Moment:   {f_bc[5]/1000:.2f} kNm")
+    print("\n[TABLE 3: MEMBER-END FORCES (Local System)]")
+    print(f"{'ElemID':<8} | {'Fx_Start(kN)':<12} | {'Fy_Start(kN)':<12} | {'M_Start(kNm)':<12} | {'M_End(kNm)':<12}")
+    print("-" * 75)
+    m_forces = solver.calculate_member_forces()
+    for eid, f in m_forces.items():
+        print(f"{eid:<8} | {f[0]/1000:12.2f} | {f[1]/1000:12.2f} | {f[2]/1000:12.2f} | {f[5]/1000:12.2f}")
+
+def run_scenario_b():
+    print("\n" + "="*80)
+    print("CE 4011 - SCENARIO B: THERMAL LOADING ANALYSIS")
+    print("="*80)
+
+    # 1. Materials (PDF Page 2)
+    # Concrete ABC: 40x80 cm -> A=0.32, I=0.017067
+    mat_conc_abc = Material(1, "Concrete_ABC", E=30e9, A=0.32, I=0.017067, alpha=8e-6)
+    # Steel Trusses BD/BE: Pipe Section -> A=9.11e-5
+    mat_steel_truss = Material(2, "Steel_Truss", E=200e9, A=9.11e-5, I=0, alpha=1.2e-5)
+
+    # 2. Nodes (Coordinates: A=0, D=3, B=7, E=13, C=16 | Height=8m)
+    nodes = [
+        Node(0, 0, 8),   # A: Fixed Support
+        Node(1, 7, 8),   # B: Joint
+        Node(2, 16, 8),  # C: Pin Support
+        Node(3, 3, 0),   # D: Roller Support
+        Node(4, 13, 0)   # E: Roller Support
+    ]
+
+    # 3. Elements
+    el_ab = Element(1, nodes[0], nodes[1], mat_conc_abc)
+    el_bc = Element(2, nodes[1], nodes[2], mat_conc_abc)
+    el_bd = Element(3, nodes[3], nodes[1], mat_steel_truss, elem_type="truss")
+    el_be = Element(4, nodes[4], nodes[1], mat_steel_truss, elem_type="truss")
+    elements = [el_ab, el_bc, el_bd, el_be]
+
+    # 4. Thermal Loads (+50C heating at bottom fibers)
+    # ABC Beam: dT_avg = 25, dT_grad = 50 (depth h = 0.8m)
+    el_ab.set_thermal_loads(dT_u=25.0, dT_g=50.0, h=0.8)
+    el_bc.set_thermal_loads(dT_u=25.0, dT_g=50.0, h=0.8)
+    # Trusses: Uniform heating +50C
+    el_bd.set_thermal_loads(dT_u=50.0, dT_g=0.0, h=0.03)
+    el_be.set_thermal_loads(dT_u=50.0, dT_g=0.0, h=0.03)
+
+    # 5. Boundary Conditions
+    bc = [
+        (0, 0, 0), (0, 1, 0), (0, 2, 0), # A: Fixed
+        (2, 0, 0), (2, 1, 0),           # C: Pin
+        (3, 1, 0),                      # D: Roller (Vertical)
+        (4, 1, 0)                       # E: Roller (Vertical)
+    ]
+
+    # 6. Solve
+    solver = StructuralSolver(nodes, elements)
+    solver.assemble()
+    solver.solve(bc)
+
+    # --- REPORTING ---
+    print("\n[TABLE 1: NODAL DISPLACEMENTS]")
+    print(f"{'NodeID':<8} | {'U (mm)':<10} | {'V (mm)':<10} | {'Rotation (rad)':<15}")
+    print("-" * 55)
+    for n in nodes:
+        u, v, th = n.displacements
+        print(f"{n.id:<8} | {u*1000:10.4f} | {v*1000:10.4f} | {th:15.6e}")
+
+    print("\n[TABLE 2: SUPPORT REACTIONS]")
+    reactions = solver.calculate_reactions(bc)
+    print(f"{'NodeID':<8} | {'Rx (kN)':<10} | {'Ry (kN)':<10} | {'M (kNm)':<10}")
+    print("-" * 45)
+    for nid, r in reactions.items():
+        print(f"{nid:<8} | {r[0]/1000:10.2f} | {r[1]/1000:10.2f} | {r[2]/1000:10.2f}")
+
+    print("\n[TABLE 3: MEMBER-END FORCES (Local System)]")
+    print(f"{'ElemID':<8} | {'Fx_Start(kN)':<12} | {'Fy_Start(kN)':<12} | {'M_Start(kNm)':<12} | {'M_End(kNm)':<12}")
+    print("-" * 75)
+    m_forces = solver.calculate_member_forces()
+    for eid, f in m_forces.items():
+        print(f"{eid:<8} | {f[0]/1000:12.2f} | {f[1]/1000:12.2f} | {f[2]/1000:12.2f} | {f[5]/1000:12.2f}")
 
 if __name__ == "__main__":
-    main()
+    run_scenario_a()
+    run_scenario_b()
